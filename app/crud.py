@@ -335,3 +335,39 @@ def get_sos_history(
         )
         .all()
     )
+
+
+def create_broadcast(
+    db: Session,
+    issued_by: int,
+    broadcast: schemas.BroadcastCreate,
+):
+    db_broadcast = models.Broadcast(
+        issued_by=issued_by,
+        type=broadcast.type,
+        message=broadcast.message,
+        priority=broadcast.priority,
+    )
+
+    db.add(db_broadcast)
+    db.commit()
+    db.refresh(db_broadcast)
+
+    return db_broadcast
+
+
+def get_broadcasts(
+    db: Session,
+    after_id: int | None = None,
+):
+    query = (
+        db.query(models.Broadcast)
+        .order_by(models.Broadcast.id.asc())
+    )
+
+    if after_id is not None:
+        query = query.filter(
+            models.Broadcast.id > after_id
+        )
+
+    return query.all()

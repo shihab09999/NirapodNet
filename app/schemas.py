@@ -111,3 +111,21 @@ class SOSResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class BroadcastCreate(BaseModel):
+    type: str = Field(min_length=1, max_length=50)
+    message: str = Field(min_length=1, max_length=5000)
+    priority: Literal["info", "warning", "critical"]
+
+
+class BroadcastResponse(BaseModel):
+    id: int
+    issued_by: int
+    type: str
+    message: str
+    priority: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

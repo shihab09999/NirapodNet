@@ -5,6 +5,14 @@ const joinButton = document.getElementById("joinButton");
 const errorBanner = document.getElementById("errorBanner");
 const sosButton = document.getElementById("sosButton");
 const sosStatus = document.getElementById("sosStatus");
+const broadcastBanner =
+    document.getElementById("broadcastBanner");
+const broadcastPriority =
+    document.getElementById("broadcastPriority");
+const broadcastMessage =
+    document.getElementById("broadcastMessage");
+const broadcastAckButton =
+    document.getElementById("broadcastAckButton");
 
 let sessionToken = localStorage.getItem("nirapodnet_session_token");
 let currentUser = null;
@@ -59,6 +67,44 @@ function showSOSAlert(data) {
     }
 }
 
+function showBroadcastAlert(broadcast) {
+    broadcastPriority.textContent =
+        broadcast.priority.toUpperCase();
+
+    broadcastMessage.textContent =
+        `${broadcast.broadcast_type || broadcast.type}: ` +
+        broadcast.message;
+
+    broadcastBanner.className =
+        `broadcast-banner ${broadcast.priority}`;
+
+    broadcastBanner.style.display = "block";
+
+    if (broadcast.id) {
+        broadcastBanner.dataset.broadcastId =
+            broadcast.id;
+    }
+
+    if (
+        broadcast.priority === "critical" &&
+        "speechSynthesis" in window
+    ) {
+        const speech =
+            new SpeechSynthesisUtterance(
+                "Critical emergency alert"
+            );
+
+        window.speechSynthesis.speak(speech);
+    }
+}
+
+broadcastAckButton.addEventListener(
+    "click",
+    () => {
+        broadcastBanner.style.display = "none";
+    }
+);
+
 function handleSOSStatusUpdate(data) {
     console.log(
         `SOS ${data.incident_id} → ${data.status}`
@@ -72,6 +118,23 @@ const displayedMessages = new Set();
 const displayedClientIds = new Set();
 
 const QUEUE_KEY = "nirapodnet_pending_messages";
+const LAST_BROADCAST_ID_KEY =
+    "nirapodnet_last_broadcast_id";
+
+function getLastBroadcastId() {
+    return Number(
+        localStorage.getItem(
+            LAST_BROADCAST_ID_KEY
+        ) || 0
+    );
+}
+
+function saveLastBroadcastId(id) {
+    localStorage.setItem(
+        LAST_BROADCAST_ID_KEY,
+        String(id)
+    );
+}
 
 function getPendingMessages() {
     return JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]");
@@ -102,6 +165,7 @@ function connectWebSocket() {
         networkStatus.className = "online";
 
         syncPendingMessages();
+        syncMissedBroadcasts();
         updateQueueCount();
 
         sendButton.disabled = false;
@@ -147,6 +211,16 @@ function connectWebSocket() {
 
         if (data.type === "sos") {
             showSOSAlert(data);
+            return;
+        }
+
+        if (data.type === "broadcast") {
+            showBroadcastAlert(data);
+
+            if (data.id) {
+                saveLastBroadcastId(data.id);
+            }
+
             return;
         }
 

@@ -541,6 +541,34 @@ async def broadcast_sos(
         manager.disconnect(connection)
 
 
+async def broadcast_alert(message: dict):
+    disconnected = []
+
+    for connection in manager.active_connections:
+        try:
+            await connection.send_json(message)
+        except Exception:
+            disconnected.append(connection)
+
+    for connection in disconnected:
+        manager.disconnect(connection)
+
+
+@app.get(
+    "/api/broadcasts",
+    response_model=list[schemas.BroadcastResponse],
+)
+def list_broadcasts(
+    after_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return crud.get_broadcasts(
+        db,
+        after_id=after_id,
+    )
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
