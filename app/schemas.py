@@ -71,8 +71,16 @@ class SOSCreate(BaseModel):
         "other",
     ]
 
-    latitude: float | None = None
-    longitude: float | None = None
+    latitude: float | None = Field(
+        default=None,
+        ge=-90,
+        le=90,
+    )
+    longitude: float | None = Field(
+        default=None,
+        ge=-180,
+        le=180,
+    )
 
     description: str | None = Field(
         default=None,
@@ -116,7 +124,17 @@ class SOSResponse(BaseModel):
 class BroadcastCreate(BaseModel):
     type: str = Field(min_length=1, max_length=50)
     message: str = Field(min_length=1, max_length=5000)
-    priority: Literal["info", "warning", "critical"]
+    # Roadmap levels are critical/high/medium/low; info/warning are
+    # kept as accepted aliases from the first Phase 2 iteration so
+    # broadcasts already stored with those values stay valid.
+    priority: Literal[
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info",
+        "warning",
+    ]
 
 
 class BroadcastResponse(BaseModel):
@@ -125,6 +143,65 @@ class BroadcastResponse(BaseModel):
     type: str
     message: str
     priority: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# -----------------
+# Check-In Schemas
+# -----------------
+
+CHECKIN_STATUSES = (
+    "SAFE",
+    "NEED_HELP",
+    "NOT_AT_LOCATION",
+    "UNABLE_TO_RESPOND",
+)
+
+
+class CheckInCreate(BaseModel):
+    status: Literal[
+        "SAFE",
+        "NEED_HELP",
+        "NOT_AT_LOCATION",
+        "UNABLE_TO_RESPOND",
+    ]
+    broadcast_id: int | None = None
+
+
+class CheckInResponse(BaseModel):
+    id: int
+    user_id: int
+    username: str
+    status: str
+    broadcast_id: int | None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CheckInSummaryResponse(BaseModel):
+    total_users: int
+    checked_in_users: int
+    not_checked_in_users: int
+    counts: dict[str, int]
+
+
+# -----------------
+# Audit Log Schemas
+# -----------------
+
+class AuditLogResponse(BaseModel):
+    id: int
+    actor_id: int
+    actor: str
+    action: str
+    entity_type: str
+    entity_id: str | None
+    detail: str | None
     created_at: datetime
 
     class Config:

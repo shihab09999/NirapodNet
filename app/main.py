@@ -18,7 +18,7 @@ from . import schemas, crud
 from fastapi import WebSocket, WebSocketDisconnect
 from .websocket import manager
 from .database import SessionLocal
-from .models import (Base,User,Message,UserSession,SOSEvent,Broadcast,CheckIn,)
+from .models import (Base,User,Message,UserSession,SOSEvent,Broadcast,CheckIn,AuditLog,)
 from .dependencies import ALL_ROLES, require_role, ADMIN_ROLE
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -28,6 +28,72 @@ app = FastAPI(title="NirapodNet")
 
 # Create SQLite tables on startup
 Base.metadata.create_all(bind=engine)
+
+
+def _bootstrap_admin():
+    """Create the first admin account from environment variables.
+
+    Set NIRAPODNET_ADMIN_USERNAME and NIRAPODNET_ADMIN_PASSWORD before
+    starting the server to bootstrap the first admin. Without both
+    variables this is a no-op, so existing deployments are unaffected.
+    The password is never changed for an account that already exists;
+    an existing account with the bootstrap username is only promoted
+    to the admin role.
+    """
+    import os
+
+    from .security import hash_password
+
+    username = os.environ.get("NIRAPODNET_ADMIN_USERNAME", "").strip()
+    password = os.environ.get("NIRAPODNET_ADMIN_PASSWORD", "")
+
+    if not username or len(password) < 8:
+        return
+
+    db = SessionLocal()
+
+    try:
+        existing = (
+            db.query(User)
+            .filter(User.username == username)
+            .first()
+        )
+
+        if existing is None:
+            admin = User(
+                username=username,
+                password_hash=hash_password(password),
+                role=ADMIN_ROLE,
+            )
+            db.add(admin)
+            db.flush()
+            db.add(
+                AuditLog(
+                    actor_id=admin.id,
+                    action="admin_bootstrapped",
+                    entity_type="user",
+                    entity_id=str(admin.id),
+                    detail="admin account created via environment bootstrap",
+                )
+            )
+            db.commit()
+        elif existing.role != ADMIN_ROLE:
+            existing.role = ADMIN_ROLE
+            db.add(
+                AuditLog(
+                    actor_id=existing.id,
+                    action="admin_bootstrapped",
+                    entity_type="user",
+                    entity_id=str(existing.id),
+                    detail="account promoted to admin via environment bootstrap",
+                )
+            )
+            db.commit()
+    finally:
+        db.close()
+
+
+_bootstrap_admin()
 
 # Static files
 app.mount(
@@ -218,6 +284,15 @@ def update_user_role(
     db.commit()
     db.refresh(user)
 
+    crud.log_audit(
+        db,
+        actor_id=current_user.id,
+        action="user_role_updated",
+        entity_type="user",
+        entity_id=str(user.id),
+        detail=f"{user.username} role set to {user.role}",
+    )
+
     return user
 
 
@@ -227,6 +302,7 @@ def rbac_user_test(
         require_role(
             "user",
             "rescue",
+            "responder",
             "operator",
             "admin",
         )
@@ -244,6 +320,7 @@ def rbac_rescue_test(
     current_user: User = Depends(
         require_role(
             "rescue",
+            "responder",
             "operator",
             "admin",
         )
@@ -297,6 +374,7 @@ def create_message(
         require_role(
             "user",
             "rescue",
+            "responder",
             "operator",
             "admin",
         )
@@ -344,6 +422,7 @@ async def create_sos(
         require_role(
             "user",
             "rescue",
+            "responder",
             "operator",
             "admin",
         )
@@ -353,6 +432,15 @@ async def create_sos(
         db=db,
         user_id=current_user.id,
         sos=sos,
+    )
+
+    crud.log_audit(
+        db,
+        actor_id=current_user.id,
+        action="sos_created",
+        entity_type="sos",
+        entity_id=incident.incident_id,
+        detail=f"emergency_type={incident.emergency_type}",
     )
 
     await broadcast_sos(
@@ -394,6 +482,7 @@ def list_sos(
     current_user: User = Depends(
         require_role(
             "rescue",
+            "responder",
             "operator",
             "admin",
         )
@@ -431,6 +520,7 @@ def get_sos_history(
     current_user: User = Depends(
         require_role(
             "rescue",
+            "responder",
             "operator",
             "admin",
         )
@@ -464,6 +554,7 @@ async def update_sos_status(
     current_user: User = Depends(
         require_role(
             "rescue",
+            "responder",
             "operator",
             "admin",
         )
@@ -492,6 +583,15 @@ async def update_sos_status(
             status_code=status.HTTP_409_CONFLICT,
             detail="Invalid SOS status transition",
         )
+
+    crud.log_audit(
+        db,
+        actor_id=current_user.id,
+        action="sos_status_changed",
+        entity_type="sos",
+        entity_id=updated.incident_id,
+        detail=f"status set to {updated.status}",
+    )
 
     await broadcast_sos(
         db,
@@ -527,6 +627,7 @@ async def broadcast_sos(
 
         if recipient.role not in {
             "rescue",
+            "responder",
             "operator",
             "admin",
         }:
@@ -544,7 +645,7 @@ async def broadcast_sos(
 async def broadcast_alert(message: dict):
     disconnected = []
 
-    for connection in manager.active_connections:
+    for connection in list(manager.active_connections.keys()):
         try:
             await connection.send_json(message)
         except Exception:
@@ -552,6 +653,54 @@ async def broadcast_alert(message: dict):
 
     for connection in disconnected:
         manager.disconnect(connection)
+
+
+@app.post(
+    "/api/broadcasts",
+    response_model=schemas.BroadcastResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_broadcast(
+    broadcast: schemas.BroadcastCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_role(
+            "operator",
+            "admin",
+        )
+    ),
+):
+    created = crud.create_broadcast(
+        db,
+        issued_by=current_user.id,
+        broadcast=broadcast,
+    )
+
+    crud.log_audit(
+        db,
+        actor_id=current_user.id,
+        action="broadcast_created",
+        entity_type="broadcast",
+        entity_id=str(created.id),
+        detail=(
+            f"type={created.type} "
+            f"priority={created.priority}"
+        ),
+    )
+
+    await broadcast_alert(
+        {
+            "type": "broadcast",
+            "id": created.id,
+            "broadcast_type": created.type,
+            "message": created.message,
+            "priority": created.priority,
+            "issued_by": created.issued_by,
+            "created_at": created.created_at.isoformat(),
+        }
+    )
+
+    return created
 
 
 @app.get(
@@ -566,6 +715,118 @@ def list_broadcasts(
     return crud.get_broadcasts(
         db,
         after_id=after_id,
+    )
+
+
+# -----------------------
+# Check-In API
+# -----------------------
+
+@app.post(
+    "/api/checkins",
+    response_model=schemas.CheckInResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_checkin(
+    checkin: schemas.CheckInCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    created = crud.create_checkin(
+        db,
+        user_id=current_user.id,
+        checkin=checkin,
+    )
+
+    if created is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Broadcast not found",
+        )
+
+    crud.log_audit(
+        db,
+        actor_id=current_user.id,
+        action="checkin_created",
+        entity_type="checkin",
+        entity_id=str(created["id"]),
+        detail=f"status={created['status']}",
+    )
+
+    return created
+
+
+@app.get(
+    "/api/checkins/me",
+    response_model=list[schemas.CheckInResponse],
+)
+def list_my_checkins(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return crud.get_user_checkins(
+        db,
+        user_id=current_user.id,
+    )
+
+
+@app.get(
+    "/api/checkins/summary",
+    response_model=schemas.CheckInSummaryResponse,
+)
+def get_checkin_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_role(
+            "rescue",
+            "responder",
+            "operator",
+            "admin",
+        )
+    ),
+):
+    return crud.get_checkin_summary(db)
+
+
+@app.get(
+    "/api/checkins",
+    response_model=list[schemas.CheckInResponse],
+)
+def list_checkins(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_role(
+            "rescue",
+            "responder",
+            "operator",
+            "admin",
+        )
+    ),
+):
+    return crud.get_checkins(db)
+
+
+# -----------------------
+# Audit Log API
+# -----------------------
+
+@app.get(
+    "/api/audit-logs",
+    response_model=list[schemas.AuditLogResponse],
+)
+def list_audit_logs(
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_role(
+            "operator",
+            "admin",
+        )
+    ),
+):
+    return crud.get_audit_logs(
+        db,
+        limit=limit,
     )
 
 
@@ -594,7 +855,15 @@ async def websocket_endpoint(
             client_id = data.get("client_id")
             content = data.get("content")
 
-            if not client_id or not content:
+            # Mirror the REST MessageCreate limits so the WebSocket
+            # path cannot store values the API schema would reject
+            # (content 1-2000 chars, client_id 1-100 chars).
+            if (
+                not isinstance(client_id, str)
+                or not isinstance(content, str)
+                or not 1 <= len(client_id) <= 100
+                or not 1 <= len(content) <= 2000
+            ):
                 await websocket.send_json({
                     "type": "error",
                     "error": "Invalid message",

@@ -8,14 +8,25 @@ from .models import User
 
 USER_ROLE = "user"
 RESCUE_ROLE = "rescue"
+# The roadmap names this tier "Responder"; "rescue" is the original
+# name for the same tier. Both are accepted everywhere "rescue" is,
+# so existing accounts keep working.
+RESPONDER_ROLE = "responder"
 OPERATOR_ROLE = "operator"
 ADMIN_ROLE = "admin"
 
 ALL_ROLES = (
     USER_ROLE,
     RESCUE_ROLE,
+    RESPONDER_ROLE,
     OPERATOR_ROLE,
     ADMIN_ROLE,
+)
+
+# Roles allowed wherever the responder/rescue tier is allowed.
+RESPONDER_TIER = (
+    RESCUE_ROLE,
+    RESPONDER_ROLE,
 )
 
 

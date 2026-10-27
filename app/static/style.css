@@ -159,6 +159,29 @@ button {
     border: 2px solid #dc2626;
 }
 
+.broadcast-banner.high {
+    background: #ffedd5;
+    border: 2px solid #ea580c;
+}
+
+.broadcast-banner.medium {
+    background: #fef3c7;
+    border: 2px solid #d97706;
+}
+
+.broadcast-banner.low {
+    background: #e0f2fe;
+    border: 2px solid #0284c7;
+}
+
+.sos-section select,
+.sos-section input {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 10px;
+}
+
 #broadcastPriority {
     font-size: 14px;
     margin-bottom: 8px;
@@ -171,4 +194,106 @@ button {
 
 #broadcastAckButton {
     width: 100%;
+}
+
+.login-hint {
+    font-size: 13px;
+    color: gray;
+    text-align: center;
+}
+
+#loginBox input {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 10px;
+}
+
+#loginBox button {
+    width: 100%;
+}
+
+.checkin-section {
+    margin-bottom: 15px;
+    padding: 12px;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    background: #fafafa;
+}
+
+.checkin-section h2 {
+    margin-top: 0;
+    font-size: 18px;
+    text-align: center;
+}
+
+.checkin-buttons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.checkin-status {
+    margin-top: 10px;
+    font-size: 14px;
+    font-weight: bold;
+    text-align: center;
+}
+
+.operator-panel {
+    margin-bottom: 15px;
+    padding: 12px;
+    border: 2px solid #0284c7;
+    border-radius: 8px;
+    background: #f0f9ff;
+}
+
+.operator-panel h2 {
+    margin-top: 0;
+    font-size: 18px;
+    text-align: center;
+}
+
+.operator-block {
+    margin-bottom: 16px;
+}
+
+.operator-block h3 {
+    margin-bottom: 8px;
+    font-size: 15px;
+}
+
+.operator-block input,
+.operator-block select {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 8px;
+}
+
+.operator-block button {
+    margin-bottom: 8px;
+}
+
+.operator-status {
+    font-size: 14px;
+    font-weight: bold;
+}
+
+.operator-list {
+    font-size: 14px;
+}
+
+.operator-item {
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    background: white;
+}
+
+.operator-item button {
+    margin-top: 6px;
+    padding: 6px 12px;
+    font-size: 13px;
 }

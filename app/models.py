@@ -72,6 +72,12 @@ class User(Base):
         cascade="all, delete-orphan",
     )
 
+    audit_logs = relationship(
+        "AuditLog",
+        back_populates="actor",
+        cascade="all, delete-orphan",
+    )
+
 
 class Message(Base):
     __tablename__ = "messages"
@@ -356,4 +362,54 @@ class CheckIn(Base):
     broadcast = relationship(
         "Broadcast",
         back_populates="checkins",
+    )
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
+
+    actor_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+
+    action = Column(
+        String(50),
+        nullable=False,
+        index=True,
+    )
+
+    entity_type = Column(
+        String(50),
+        nullable=False,
+    )
+
+    entity_id = Column(
+        String(50),
+        nullable=True,
+    )
+
+    detail = Column(
+        Text,
+        nullable=True,
+    )
+
+    created_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        index=True,
+    )
+
+    actor = relationship(
+        "User",
+        back_populates="audit_logs",
     )

@@ -371,3 +371,157 @@ def get_broadcasts(
         )
 
     return query.all()
+
+
+# ------------------
+# Check-Ins
+# ------------------
+
+def _checkin_to_dict(checkin: models.CheckIn) -> dict:
+    return {
+        "id": checkin.id,
+        "user_id": checkin.user_id,
+        "username": checkin.user.username,
+        "status": checkin.status,
+        "broadcast_id": checkin.broadcast_id,
+        "created_at": checkin.created_at,
+    }
+
+
+def create_checkin(
+    db: Session,
+    user_id: int,
+    checkin: schemas.CheckInCreate,
+):
+    if checkin.broadcast_id is not None:
+        broadcast = (
+            db.query(models.Broadcast)
+            .filter(models.Broadcast.id == checkin.broadcast_id)
+            .first()
+        )
+
+        if broadcast is None:
+            return None
+
+    db_checkin = models.CheckIn(
+        user_id=user_id,
+        status=checkin.status,
+        broadcast_id=checkin.broadcast_id,
+    )
+
+    db.add(db_checkin)
+    db.commit()
+    db.refresh(db_checkin)
+
+    return _checkin_to_dict(db_checkin)
+
+
+def get_user_checkins(
+    db: Session,
+    user_id: int,
+):
+    checkins = (
+        db.query(models.CheckIn)
+        .filter(models.CheckIn.user_id == user_id)
+        .order_by(models.CheckIn.created_at.desc())
+        .all()
+    )
+
+    return [_checkin_to_dict(c) for c in checkins]
+
+
+def get_checkins(db: Session):
+    checkins = (
+        db.query(models.CheckIn)
+        .order_by(models.CheckIn.created_at.desc())
+        .all()
+    )
+
+    return [_checkin_to_dict(c) for c in checkins]
+
+
+def get_checkin_summary(db: Session) -> dict:
+    total_users = db.query(models.User).count()
+
+    checkins = (
+        db.query(models.CheckIn)
+        .order_by(
+            models.CheckIn.user_id.asc(),
+            models.CheckIn.created_at.asc(),
+        )
+        .all()
+    )
+
+    # Only each user's latest check-in counts towards the summary.
+    latest_by_user: dict[int, models.CheckIn] = {}
+
+    for checkin in checkins:
+        latest_by_user[checkin.user_id] = checkin
+
+    counts = {status: 0 for status in schemas.CHECKIN_STATUSES}
+
+    for checkin in latest_by_user.values():
+        if checkin.status in counts:
+            counts[checkin.status] += 1
+
+    checked_in = len(latest_by_user)
+
+    return {
+        "total_users": total_users,
+        "checked_in_users": checked_in,
+        "not_checked_in_users": total_users - checked_in,
+        "counts": counts,
+    }
+
+
+# ------------------
+# Audit Log
+# ------------------
+
+def log_audit(
+    db: Session,
+    actor_id: int,
+    action: str,
+    entity_type: str,
+    entity_id: str | None = None,
+    detail: str | None = None,
+):
+    entry = models.AuditLog(
+        actor_id=actor_id,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        detail=detail,
+    )
+
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+
+    return entry
+
+
+def get_audit_logs(
+    db: Session,
+    limit: int = 100,
+):
+    logs = (
+        db.query(models.AuditLog)
+        .order_by(models.AuditLog.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        {
+            "id": entry.id,
+            "actor_id": entry.actor_id,
+            "actor": entry.actor.username,
+            "action": entry.action,
+            "entity_type": entry.entity_type,
+            "entity_id": entry.entity_id,
+            "detail": entry.detail,
+            "created_at": entry.created_at,
+        }
+        for entry in logs
+    ]

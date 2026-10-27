@@ -8,13 +8,13 @@ This roadmap tracks the development of NirapodNet through 14 phases (Phase 0–1
 ## Phase 0 — Foundation
 **Goal:** Establish core development environment and foundational skills.
 
-- [ ] Set up Python development environment
-- [ ] Configure Git and GitHub repository
-- [ ] Set up Linux development environment (WSL or native)
+- [x] Set up Python development environment
+- [x] Configure Git and GitHub repository
+- [x] Set up Linux development environment (WSL or native)
 - [ ] Configure VS Code with extensions (Python, Docker, GitLens)
 - [ ] Learn networking fundamentals (TCP/IP, WebSockets, HTTP)
 - [ ] Build basic web development skills (HTML, CSS, JavaScript)
-- [ ] Create initial project structure and documentation
+- [x] Create initial project structure and documentation
 
 **Target Completion:** Week 1-2
 
@@ -23,13 +23,13 @@ This roadmap tracks the development of NirapodNet through 14 phases (Phase 0–1
 ## Phase 1 — Core Prototype
 **Goal:** Build a working LAN messaging system with a local server.
 
-- [ ] Design local network communication protocol
-- [ ] Implement FastAPI/Flask backend server
-- [ ] Create WebSocket-based real-time messaging
-- [ ] Build basic frontend (HTML/CSS/JS) for messaging
-- [ ] Implement user registration and login (local only)
-- [ ] Test multi-device communication on same LAN
-- [ ] Document API endpoints and message formats
+- [x] Design local network communication protocol
+- [x] Implement FastAPI/Flask backend server
+- [x] Create WebSocket-based real-time messaging
+- [x] Build basic frontend (HTML/CSS/JS) for messaging
+- [x] Implement user registration and login (local only)
+- [x] Test multi-device communication on same LAN
+- [x] Document API endpoints and message formats
 - [ ] Create Docker Compose for local development
 
 **Target Completion:** Week 3-4
@@ -39,23 +39,25 @@ This roadmap tracks the development of NirapodNet through 14 phases (Phase 0–1
 ## Phase 2 — Emergency System
 **Goal:** Implement core emergency communication features.
 
-- [ ] Design role-based access control (Admin, Operator, Responder, User)
-- [ ] Implement authentication with secure password hashing (bcrypt/argon2)
-- [ ] Build Emergency Broadcast system
-  - [ ] Authenticated broadcast messages
-  - [ ] Priority levels (Critical, High, Medium, Low)
+- [x] Design role-based access control (Admin, Operator, Responder, User)
+- [x] Implement authentication with secure password hashing (bcrypt/argon2)
+- [x] Build Emergency Broadcast system
+  - [x] Authenticated broadcast messages
+  - [x] Priority levels (Critical, High, Medium, Low — implemented 2026-10-20; info/warning remain accepted as legacy aliases)
   - [ ] Geographic targeting
-- [ ] Implement SOS System
-  - [ ] SOS request with location, type, description
-  - [ ] Incident ID assignment
-  - [ ] Routing to operator dashboard
-- [ ] Implement Safety Check-In
-  - [ ] Four status options (Safe, Need Help, Not at Location, Unable to Respond)
-  - [ ] Aggregation dashboard for operators
-- [ ] Build operator/admin dashboard UI
-- [ ] Add audit logging for critical actions
+- [x] Implement SOS System
+  - [x] SOS request with location, type, description
+  - [x] Incident ID assignment
+  - [x] Routing to operator dashboard
+- [x] Implement Safety Check-In
+  - [x] Four status options (Safe, Need Help, Not at Location, Unable to Respond)
+  - [x] Aggregation dashboard for operators
+- [x] Build operator/admin dashboard UI
+- [x] Add audit logging for critical actions
 
 **Target Completion:** Week 5-7
+
+> Note (2026-10-20): Geographic targeting for broadcasts is deferred to Phase 6 (Geospatial Layer) — user areas/locations do not exist before that phase, and phases proceed serially. In Phase 2 a broadcast targets the whole local network. That checkbox stays open until Phase 6. All other Phase 2 items are complete; see `tests/phase-2-test-log.md`.
 
 ---
 
@@ -265,9 +267,9 @@ This roadmap tracks the development of NirapodNet through 14 phases (Phase 0–1
 
 | Phase | Status | Target Weeks | Actual Completion |
 |-------|--------|--------------|-------------------|
-| Phase 0 — Foundation | [ ] Not Started | 1-2 | - |
-| Phase 1 — Core Prototype | [ ] Not Started | 3-4 | - |
-| Phase 2 — Emergency System | [ ] Not Started | 5-7 | - |
+| Phase 0 — Foundation | [x] Completed | 1-2 | 2026-08-30 |
+| Phase 1 — Core Prototype | [x] Completed | 3-4 | 2026-08-31 |
+| Phase 2 — Emergency System | [x] Completed | 5-7 | 2026-10-20 |
 | Phase 3 — Security | [ ] Not Started | 8-10 | - |
 | Phase 4 — Measurement | [ ] Not Started | 11-12 | - |
 | Phase 5 — First Real Pilot | [ ] Not Started | 13-15 | - |
@@ -294,5 +296,5 @@ Each phase must pass these gates before proceeding:
 
 ---
 
-*Last Updated: 2026-08-17*
+*Last Updated: 2026-10-20*
 *Version: 1.0*

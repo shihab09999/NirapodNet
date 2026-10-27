@@ -16,6 +16,10 @@
     <span id="userLabel"></span>
 
     <span id="queueCount">Pending: 0</span>
+
+    <button id="logoutButton" style="display:none;">
+        Logout
+    </button>
 </div>
 
 <div class="container">
@@ -51,20 +55,149 @@
             maxlength="50"
         />
 
+        <input
+            id="passwordInput"
+            type="password"
+            placeholder="Enter password (min 8 characters)"
+            autocomplete="current-password"
+            minlength="8"
+            maxlength="128"
+        />
 
         <button id="joinButton">
             Join Network
         </button>
+
+        <p class="login-hint">
+            New accounts are created automatically the first
+            time you join with a new username.
+        </p>
     </div>
 
 
     <div id="chatBox" style="display:none;">
         <section class="sos-section">
+            <select id="sosTypeInput">
+                <option value="flood">🌊 Flood</option>
+                <option value="medical">🏥 Medical</option>
+                <option value="fire">🔥 Fire</option>
+                <option value="trapped">🧱 Trapped</option>
+                <option value="other" selected>⚠️ Other</option>
+            </select>
+
+            <input
+                id="sosDescriptionInput"
+                type="text"
+                placeholder="Describe the emergency (optional)"
+                maxlength="2000"
+            />
+
             <button id="sosButton" class="sos-button">
                 🚨 SEND SOS
             </button>
 
             <div id="sosStatus" class="sos-status"></div>
+        </section>
+
+        <section class="checkin-section">
+            <h2>Safety Check-In</h2>
+
+            <div class="checkin-buttons">
+                <button data-checkin-status="SAFE">
+                    ✅ Safe
+                </button>
+
+                <button data-checkin-status="NEED_HELP">
+                    🆘 Need Help
+                </button>
+
+                <button data-checkin-status="NOT_AT_LOCATION">
+                    📍 Not at Location
+                </button>
+
+                <button data-checkin-status="UNABLE_TO_RESPOND">
+                    🔇 Unable to Respond
+                </button>
+            </div>
+
+            <div id="checkinStatus" class="checkin-status"></div>
+        </section>
+
+        <section id="operatorPanel" class="operator-panel" style="display:none;">
+            <h2>Operator Dashboard</h2>
+
+            <div class="operator-block">
+                <h3>Emergency Broadcast</h3>
+
+                <input
+                    id="broadcastTypeInput"
+                    type="text"
+                    placeholder="Type (e.g. Flood Warning)"
+                    maxlength="50"
+                />
+
+                <select id="broadcastPriorityInput">
+                    <option value="critical">Critical</option>
+                    <option value="high">High</option>
+                    <option value="medium" selected>Medium</option>
+                    <option value="low">Low</option>
+                </select>
+
+                <input
+                    id="broadcastMessageInput"
+                    type="text"
+                    placeholder="Broadcast message..."
+                    maxlength="5000"
+                />
+
+                <button id="broadcastSendButton">
+                    Send Broadcast
+                </button>
+
+                <div id="broadcastSendStatus" class="operator-status"></div>
+            </div>
+
+            <div class="operator-block">
+                <h3>SOS Incidents</h3>
+
+                <button id="sosRefreshButton">
+                    Refresh
+                </button>
+
+                <div id="sosList" class="operator-list"></div>
+            </div>
+
+            <div class="operator-block">
+                <h3>Check-In Summary</h3>
+
+                <button id="checkinRefreshButton">
+                    Refresh
+                </button>
+
+                <div id="checkinSummary" class="operator-list"></div>
+
+                <div id="checkinList" class="operator-list"></div>
+            </div>
+
+            <div class="operator-block" id="adminBlock" style="display:none;">
+                <h3>User Roles (Admin)</h3>
+
+                <button id="adminRefreshButton">
+                    Refresh
+                </button>
+
+                <div id="adminUserList" class="operator-list"></div>
+            </div>
+
+            <div class="operator-block" id="auditBlock" style="display:none;">
+                <h3>Audit Log</h3>
+
+                <button id="auditRefreshButton">
+                    Refresh
+                </button>
+
+                <div id="auditList" class="operator-list"></div>
+            </div>
         </section>
 
         <section class="messages" id="messages">
