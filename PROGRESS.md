@@ -159,6 +159,57 @@ broadcast geographic targeting stays deferred to Phase 6.
 
 ---
 
+## 2026-10-30 — Phase 3 Started (Security, in progress)
+
+**Phase:** 3 — Security
+**Status:** In Progress (not Completed — see open items below)
+
+Continuity: before any Phase 3 code, the local clone was
+aligned to the GitHub head `4a07639` (Phase 2 push). The
+working tree was verified byte-for-byte identical to
+`origin/main` (hashes matched, 3 untracked files identical)
+before `git reset --hard origin/main`, so no Phase 2 work
+was lost and the tree is now clean at `4a07639`.
+
+### Tasks Completed
+- [x] Security headers middleware on every response (CSP, nosniff, DENY framing, Referrer-Policy, Permissions-Policy; HSTS only over HTTPS)
+- [x] Session tokens stored hashed (SHA-256), 24-hour expiry kept, 5-session cap per user, role change invalidates all of that user's sessions
+- [x] Rate limiting (in-memory, per process): login 10/minute per IP + username (env-tunable), authenticated writes 120/minute per user, WebSocket 30 messages per 10 seconds per connection; 429 with Retry-After
+- [x] Replay protection: optional Idempotency-Key header on POST /messages, /api/sos, /api/broadcasts, /api/checkins; WebSocket optional seq (strictly increasing per connection) and ts (within 5 minutes); frontend now sends seq + ts
+- [x] Broadcast signing: HMAC-SHA256 over id|issued_by|type|message|priority|created_at, signature in API and WebSocket payloads, GET /api/broadcasts/{id}/verify endpoint
+- [x] Input validation and sanitization: control-character rejection and whitespace stripping for usernames, message content, broadcast fields and SOS descriptions (frontend already renders with textContent)
+- [x] Threat modeling and security architecture documented in docs/SECURITY.md, with an OWASP Top 10 self-review
+- [x] Old-database upgrade: broadcasts table gains a signature column via migration on startup (create_all alone does not add columns); verified with a pre-Phase-3 database
+- [x] Automated suite tests/run_phase3_checks.py: 34/34 passed; Phase 2 suite still 44/44; real uvicorn run passed with headers visible
+
+### Decisions Made
+- No new third-party dependency in Phase 3 (stdlib HMAC only). HMAC signing is server-side tamper evidence, not public-key verification — documented honestly in docs/SECURITY.md, not claimed as otherwise.
+- End-to-end encryption is NOT implemented and NOT claimed: messages are encrypted in transit only under TLS and stored in clear text. A per-user E2E design for group LAN chat is deferred, because it would change the offline-first UX and needs its own key-management design.
+- WSS is deployment-dependent: the frontend already uses wss: over HTTPS, and TLS is documented with a uvicorn command, but no certificate is bundled or checked in.
+- Signing key: NIRAPODNET_SIGNING_KEY from the environment is the production path; without it the server uses an ephemeral per-process key and old signatures stop verifying after a restart.
+- WebSocket token still travels as a query parameter for compatibility; documented as a residual risk, header-based WS auth is a follow-up.
+
+### Blockers
+- One real bug found by testing and fixed the same day: the session cap deleted the newest session instead of the oldest (slice direction). Fixed in app/crud.py; Phase 3 suite then passed 34/34.
+- One real upgrade bug found by testing and fixed the same day: pre-Phase-3 databases failed broadcast queries (missing signature column). Fixed with a startup migration in app/main.py; old broadcast lists and verifies as signature_present=False, valid=False.
+
+### Metrics
+- Phase 3 suite: 34/34 passed
+- Phase 2 regression suite: 44/44 passed (unchanged)
+- Old-database upgrade test: passed
+- Real uvicorn run: passed
+
+### Next Steps
+- End-to-end encryption design (deferred, see above)
+- Public-key broadcast signing to complement or replace HMAC
+- Header-based WebSocket authentication
+- Audit logging for failed logins and rate-limit hits
+- Removing inline style attributes so CSP can drop 'unsafe-inline'
+- Formal penetration test (Phase 4 item)
+- Only after those decisions: mark Phase 3 Completed and push, with the user's permission (no commit/push in this session)
+
+---
+
 ## Phase Completion Log
 
 | Phase | Start Date | End Date | Status | Notes |
@@ -166,7 +217,7 @@ broadcast geographic targeting stays deferred to Phase 6.
 | Phase 0 — Foundation | 2026-08-17 | 2026-08-30 | Completed | Repository and environment set up; superseded by Phase 1 completion |
 | Phase 1 — Core Prototype | 2026-08-20 | 2026-08-31 | Completed | 5/5 tests in tests/phase-1 test log; behaviour unchanged by Phase 2 work |
 | Phase 2 — Emergency System | 2026-09-01 | 2026-10-20 | Completed | Broadcast, check-in, dashboard and audit completed 2026-10-20; see tests/phase-2-test-log.md. Broadcast geographic targeting deferred to Phase 6 |
-| Phase 3 — Security | - | - | Not Started | - |
+| Phase 3 — Security | - | - | In Progress | Started 2026-10-30; headers, hashed sessions, rate limits, replay protection, HMAC broadcast signing and threat model done; E2E encryption and WSS deployment still open — see PROGRESS.md |
 | Phase 4 — Measurement | - | - | Not Started | - |
 | Phase 5 — First Real Pilot | - | - | Not Started | - |
 | Phase 6 — Geospatial Layer | - | - | Not Started | - |

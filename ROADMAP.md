@@ -65,16 +65,18 @@ This roadmap tracks the development of NirapodNet through 14 phases (Phase 0–1
 **Goal:** Harden the system with comprehensive security measures.
 
 - [ ] Implement end-to-end encryption for messages
-- [ ] Add message signing for emergency broadcasts
-- [ ] Implement replay protection (unique IDs, timestamps, sequences)
-- [ ] Conduct threat modeling exercise
-- [ ] Implement rate limiting and DoS protection
-- [ ] Add input validation and sanitization
+- [x] Add message signing for emergency broadcasts
+- [x] Implement replay protection (unique IDs, timestamps, sequences)
+- [x] Conduct threat modeling exercise
+- [x] Implement rate limiting and DoS protection
+- [x] Add input validation and sanitization
 - [ ] Secure WebSocket connections (WSS)
-- [ ] Implement session management with secure tokens
-- [ ] Add security headers (CSP, HSTS, etc.)
+- [x] Implement session management with secure tokens
+- [x] Add security headers (CSP, HSTS, etc.)
 - [ ] Perform security testing (OWASP Top 10)
-- [ ] Document security architecture and threat model
+- [x] Document security architecture and threat model
+> Note (2026-10-30): Phase 3 is started, not completed. End-to-end encryption is deliberately not ticked: messages are TLS-only in transit and stored in clear text, and a per-user E2E design is deferred (see docs/SECURITY.md). WSS is deployment-dependent: the frontend already uses wss: over HTTPS and TLS is documented, but no certificate is bundled. OWASP work so far is a self-review in docs/SECURITY.md, not a formal penetration test. Broadcast signing is HMAC (server-side tamper evidence), not public-key verification. See tests/run_phase3_checks.py (34/34) and the Phase 3 entry in PROGRESS.md.
+
 
 **Target Completion:** Week 8-10
 
@@ -270,7 +272,7 @@ This roadmap tracks the development of NirapodNet through 14 phases (Phase 0–1
 | Phase 0 — Foundation | [x] Completed | 1-2 | 2026-08-30 |
 | Phase 1 — Core Prototype | [x] Completed | 3-4 | 2026-08-31 |
 | Phase 2 — Emergency System | [x] Completed | 5-7 | 2026-10-20 |
-| Phase 3 — Security | [ ] Not Started | 8-10 | - |
+| Phase 3 — Security | In Progress | 8-10 | - |
 | Phase 4 — Measurement | [ ] Not Started | 11-12 | - |
 | Phase 5 — First Real Pilot | [ ] Not Started | 13-15 | - |
 | Phase 6 — Geospatial Layer | [ ] Not Started | 16-19 | - |
@@ -296,5 +298,5 @@ Each phase must pass these gates before proceeding:
 
 ---
 
-*Last Updated: 2026-10-20*
+*Last Updated: 2026-10-30*
 *Version: 1.0*

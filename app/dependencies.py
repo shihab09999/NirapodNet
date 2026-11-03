@@ -23,11 +23,9 @@ ALL_ROLES = (
     ADMIN_ROLE,
 )
 
-# Roles allowed wherever the responder/rescue tier is allowed.
-RESPONDER_TIER = (
-    RESCUE_ROLE,
-    RESPONDER_ROLE,
-)
+# NOTE: the old RESPONDER_TIER tuple was dead code (no caller used
+# it) and is removed. Routes spell out their allowed roles in
+# require_role(...) instead of hiding them behind a tier constant.
 
 
 def require_role(*allowed_roles: str) -> Callable:

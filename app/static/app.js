@@ -17,6 +17,10 @@ const broadcastAckButton =
 let sessionToken = localStorage.getItem("nirapodnet_session_token");
 let currentUser = null;
 
+// Phase 3: WebSocket replay-protection sequence, reset on
+// every new connection.
+let wsSeq = 0;
+
 function authHeaders() {
     return sessionToken
         ? {
@@ -148,6 +152,8 @@ function savePendingMessages(queue) {
 }
 
 function connectWebSocket() {
+
+    wsSeq = 0;
 
     const protocol = window.location.protocol === "https:"
         ? "wss:"
@@ -857,6 +863,14 @@ function trySendPendingMessages() {
     const queue = getPendingMessages();
 
     for (const message of queue) {
+
+        // Phase 3: per-connection sequence + timestamp. The
+        // server rejects a replayed sequence or a stale
+        // timestamp when these fields are present; a new
+        // connection starts a fresh sequence.
+        wsSeq += 1;
+        message.seq = wsSeq;
+        message.ts = Math.floor(Date.now() / 1000);
 
         socket.send(JSON.stringify(message));
 

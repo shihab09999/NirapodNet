@@ -1,10 +1,10 @@
 # NirapodNet — API and Message Format
 
 This document describes the local network communication protocol as
-implemented in Phase 1 (core prototype) and Phase 2 (emergency
-system). It covers the REST endpoints and the WebSocket message
-formats. FastAPI also serves interactive documentation at `/docs`
-while the server is running.
+implemented in Phase 1 (core prototype), Phase 2 (emergency
+system) and Phase 3 (security, in progress). It covers the REST
+endpoints and the WebSocket message formats. FastAPI also serves
+interactive documentation at `/docs` while the server is running.
 
 ## Authentication
 
@@ -13,11 +13,35 @@ while the server is running.
   `409` when the username is taken.
 - Login: `POST /api/login` with the same body. Returns
   `{"token", "user": {"id", "username", "role"}, "expires_at"}`.
-  Sessions expire after 24 hours.
+  Sessions expire after 24 hours. Only the hash of the token
+  is stored (Phase 3); the plain token is returned once at
+  login. At most 5 live sessions per user are kept.
 - Authenticated requests send the token as
   `Authorization: Bearer <token>`.
 - Logout: `POST /api/logout` invalidates the current session.
 - Current user: `GET /api/me`.
+
+## Phase 3 security notes
+
+- Every response carries security headers (CSP,
+  `X-Content-Type-Options`, `X-Frame-Options`,
+  `Referrer-Policy`, `Permissions-Policy`; HSTS only over
+  HTTPS). See `docs/SECURITY.md` for the threat model.
+- Rate limits return `429` with `Retry-After: 60`:
+  login 10/minute per IP + username (tunable with
+  `NIRAPODNET_LOGIN_RATE_LIMIT`), authenticated writes
+  120/minute per user, WebSocket 30 messages per 10
+  seconds per connection.
+- `POST /messages`, `POST /api/sos`,
+  `POST /api/broadcasts` and `POST /api/checkins`
+  accept an optional `Idempotency-Key` header. Repeating
+  the same key for the same user and endpoint returns
+  the original response instead of creating a second
+  entity.
+- Broadcasts created in Phase 3 carry a `signature`
+  field. `GET /api/broadcasts/{id}/verify`
+  (authenticated) reports `signature_present` and
+  `valid` for a stored broadcast.
 
 ### Roles
 
@@ -57,6 +81,7 @@ characters); without them, startup behaviour is unchanged.
 | `PATCH /api/sos/{incident_id}/status` | responder, operator, admin | Advance an SOS status |
 | `POST /api/broadcasts` | operator, admin | Create an emergency broadcast |
 | `GET /api/broadcasts?after_id=` | any session | List broadcasts (optionally only after an id) |
+| `GET /api/broadcasts/{id}/verify` | any session | Check a broadcast's Phase 3 signature |
 | `POST /api/checkins` | any session | Send a safety check-in |
 | `GET /api/checkins/me` | any session | Own check-in history |
 | `GET /api/checkins` | responder, operator, admin | All check-ins |
@@ -120,7 +145,12 @@ Client → server (chat message):
 {"client_id": "unique per message, 1-100 chars", "content": "1-2000 chars"}
 ```
 
-Messages outside those limits are rejected with an error frame and
+Optional Phase 3 fields: `"seq"` (strictly increasing
+integer per connection) and `"ts"` (unix seconds, within
+5 minutes of server time). When sent, a replayed sequence
+or stale timestamp is rejected with an error frame. The
+shipped frontend sends both. Messages outside the length
+limits are rejected with an error frame and
 are not stored. A repeated `client_id` from the same sender returns
 the original acknowledgement instead of storing a duplicate.
 
@@ -132,5 +162,5 @@ Server → client frames:
 | `message` | Another user's message | `client_id`, `id`, `sender_id`, `sender`, `content`, `timestamp` |
 | `sos` | New SOS (responder tier and above only) | `incident_id`, `user_id`, `emergency_type`, `latitude`, `longitude`, `description`, `status`, `created_at` |
 | `sos_status` | SOS status changed (responder tier and above only) | `incident_id`, `status`, `changed_by`, `timestamp` |
-| `broadcast` | New emergency broadcast (all users) | `id`, `broadcast_type`, `message`, `priority`, `issued_by`, `created_at` |
+| `broadcast` | New emergency broadcast (all users) | `id`, `broadcast_type`, `message`, `priority`, `issued_by`, `created_at`, `signature` (Phase 3) |
 | `error` | Your last frame was invalid | `error` |

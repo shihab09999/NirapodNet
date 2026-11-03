@@ -1,11 +1,42 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from typing import Literal
+
+from .security import contains_control_characters
+
+
+def _clean_text(value: str) -> str:
+    """Strip surrounding whitespace and reject control characters.
+
+    Applied to free-text fields so stored content cannot smuggle
+    NUL/control bytes into the database or into other clients.
+    Rendering already uses textContent on the frontend, so this
+    is defence in depth, not the only XSS control.
+    """
+    cleaned = value.strip()
+
+    if contains_control_characters(cleaned):
+        raise ValueError("control characters are not allowed")
+
+    return cleaned
 
 
 class UserCreate(BaseModel):
     username: str = Field(min_length=3, max_length=50)
     password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("username")
+    @classmethod
+    def username_must_be_clean(cls, value: str) -> str:
+        cleaned = _clean_text(value)
+
+        if len(cleaned) < 3:
+            raise ValueError("username is too short")
+
+        if any(char.isspace() for char in cleaned):
+            raise ValueError("username must not contain whitespace")
+
+        return cleaned
 
 
 class UserResponse(BaseModel):
@@ -25,11 +56,9 @@ class RoleUpdate(BaseModel):
 # Authentication
 # -----------------
 
-class RegisterRequest(BaseModel):
-    username: str = Field(min_length=3, max_length=50)
-    password: str = Field(min_length=8, max_length=128)
-
-
+# NOTE: there is no separate RegisterRequest any more. Registration
+# uses UserCreate everywhere (POST /users and POST /api/register);
+# the old duplicate schema was dead code and is removed.
 class LoginRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50)
     password: str = Field(min_length=8, max_length=128)
@@ -40,14 +69,41 @@ class LoginResponse(BaseModel):
     user: UserResponse
     expires_at: datetime
 
+
+class SessionResponse(BaseModel):
+    """One login session, as listed for its owner.
+
+    token_preview is only the first 8 characters of the stored
+    SHA-256 token hash. The hash itself is never a usable token,
+    and the preview is only enough to tell sessions apart in the
+    list; revoking "all other sessions" does not need it at all.
+    """
+
+    token_preview: str
+    expires_at: datetime
+
 #-----------------
 # Message Schemas
 #-----------------
 
 class MessageCreate(BaseModel):
     client_id: str = Field(min_length=1, max_length=100)
-    sender_id: int
+    # Audit fix (10): clients used to be required to send sender_id
+    # even though the server always overwrote it with the
+    # authenticated user. It is now optional and always ignored:
+    # the sender is the logged-in user, never the request body.
+    sender_id: int | None = None
     content: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("content")
+    @classmethod
+    def content_must_be_clean(cls, value: str) -> str:
+        cleaned = _clean_text(value)
+
+        if not cleaned:
+            raise ValueError("content must not be empty")
+
+        return cleaned
 
 
 class MessageResponse(BaseModel):
@@ -86,6 +142,14 @@ class SOSCreate(BaseModel):
         default=None,
         max_length=2000,
     )
+
+    @field_validator("description")
+    @classmethod
+    def description_must_be_clean(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        return _clean_text(value)
 
 
 class SOSStatusUpdate(BaseModel):
@@ -136,6 +200,16 @@ class BroadcastCreate(BaseModel):
         "warning",
     ]
 
+    @field_validator("type", "message")
+    @classmethod
+    def broadcast_fields_must_be_clean(cls, value: str) -> str:
+        cleaned = _clean_text(value)
+
+        if not cleaned:
+            raise ValueError("field must not be empty")
+
+        return cleaned
+
 
 class BroadcastResponse(BaseModel):
     id: int
@@ -144,6 +218,8 @@ class BroadcastResponse(BaseModel):
     message: str
     priority: str
     created_at: datetime
+    # Phase 3: None for broadcasts created before Phase 3.
+    signature: str | None = None
 
     class Config:
         from_attributes = True

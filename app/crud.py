@@ -1,10 +1,21 @@
 from datetime import datetime, timezone
 import secrets
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from . import models, schemas
-from .security import generate_session_token, hash_password, verify_password
+from .security import (
+    generate_session_token,
+    hash_password,
+    hash_session_token,
+    verify_password,
+)
+
+# Phase 3: keep at most this many live sessions per user. The
+# oldest sessions are dropped when a new login would exceed it,
+# so a stolen token does not stay usable forever alongside
+# every later login.
+MAX_SESSIONS_PER_USER = 5
 
 #-----------------
 # users
@@ -33,8 +44,50 @@ def create_user(db: Session, user: schemas.UserCreate):
     return db_user
 
 
-def get_users(db: Session):
-    return db.query(models.User).all()
+def get_users(db: Session, limit: int = 100, offset: int = 0):
+    # Audit fix (4): bounded lists. The old code returned every
+    # row at once; every list endpoint now takes limit/offset
+    # with a server-side cap, and the default is 100.
+    return (
+        db.query(models.User)
+        .order_by(models.User.id.asc())
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
+
+
+def list_sessions(db: Session, user_id: int):
+    """Sessions of one user, newest expiry last, for /api/sessions."""
+    return (
+        db.query(models.UserSession)
+        .filter(models.UserSession.user_id == user_id)
+        .order_by(models.UserSession.expires_at.asc())
+        .all()
+    )
+
+
+def delete_other_sessions(
+    db: Session,
+    user_id: int,
+    current_token_hash: str,
+):
+    """Revoke every session of a user except the current one."""
+    others = (
+        db.query(models.UserSession)
+        .filter(
+            models.UserSession.user_id == user_id,
+            models.UserSession.token != current_token_hash,
+        )
+        .all()
+    )
+
+    for session in others:
+        db.delete(session)
+
+    db.commit()
+
+    return len(others)
 
 
 def authenticate_user(
@@ -62,10 +115,31 @@ def create_session(
     user_id: int,
     expires_at: datetime,
 ):
+    """Create a session and return (session, plain token).
+
+    Only the SHA-256 hash of the token is stored. The plain
+    token is returned once, to the login caller, and must be
+    sent back as the Bearer token. It is never stored again.
+    """
     token = generate_session_token()
 
+    existing = (
+        db.query(models.UserSession)
+        .filter(models.UserSession.user_id == user_id)
+        .order_by(models.UserSession.expires_at.asc())
+        .all()
+    )
+
+    # Drop the oldest sessions first (earliest expiry first)
+    # so that after the new session is added, at most
+    # MAX_SESSIONS_PER_USER remain.
+    excess = len(existing) - (MAX_SESSIONS_PER_USER - 1)
+
+    for old in existing[:max(excess, 0)]:
+        db.delete(old)
+
     session = models.UserSession(
-        token=token,
+        token=hash_session_token(token),
         user_id=user_id,
         expires_at=expires_at,
     )
@@ -74,7 +148,7 @@ def create_session(
     db.commit()
     db.refresh(session)
 
-    return session
+    return session, token
 
 
 def get_session_user(
@@ -83,7 +157,9 @@ def get_session_user(
 ):
     session = (
         db.query(models.UserSession)
-        .filter(models.UserSession.token == token)
+        .filter(
+            models.UserSession.token == hash_session_token(token)
+        )
         .first()
     )
 
@@ -106,7 +182,9 @@ def delete_session(
 ):
     session = (
         db.query(models.UserSession)
-        .filter(models.UserSession.token == token)
+        .filter(
+            models.UserSession.token == hash_session_token(token)
+        )
         .first()
     )
 
@@ -117,6 +195,74 @@ def delete_session(
     db.commit()
 
     return True
+
+
+def delete_sessions_for_user(
+    db: Session,
+    user_id: int,
+    commit: bool = True,
+):
+    """Phase 3: invalidate every session of a user.
+
+    Used when an admin changes that user's role, so a token
+    issued under the old role cannot keep being used.
+    commit=False lets the caller commit role change, session
+    invalidation and audit entry in one transaction (audit
+    fix 10: audit atomicity), instead of three separate commits.
+    """
+    sessions = (
+        db.query(models.UserSession)
+        .filter(models.UserSession.user_id == user_id)
+        .all()
+    )
+
+    for session in sessions:
+        db.delete(session)
+
+    if commit:
+        db.commit()
+
+    return len(sessions)
+
+
+def get_idempotency_record(
+    db: Session,
+    user_id: int,
+    endpoint: str,
+    idempotency_key: str,
+):
+    return (
+        db.query(models.IdempotencyRecord)
+        .filter(
+            models.IdempotencyRecord.user_id == user_id,
+            models.IdempotencyRecord.endpoint == endpoint,
+            models.IdempotencyRecord.idempotency_key
+            == idempotency_key,
+        )
+        .first()
+    )
+
+
+def save_idempotency_record(
+    db: Session,
+    user_id: int,
+    endpoint: str,
+    idempotency_key: str,
+    response_status: int,
+    response_body: str,
+):
+    record = models.IdempotencyRecord(
+        user_id=user_id,
+        endpoint=endpoint,
+        idempotency_key=idempotency_key,
+        response_status=response_status,
+        response_body=response_body,
+    )
+
+    db.add(record)
+    db.commit()
+
+    return record
 
 #------------------
 #Messages
@@ -162,10 +308,16 @@ def create_message(db: Session, message: schemas.MessageCreate):
     }
 
 
-def get_messages(db: Session):
+def get_messages(db: Session, limit: int = 100, offset: int = 0):
+    # Audit fix (4): bounded, and joinedload(sender) instead of
+    # one sender query per message (the old N+1). This function
+    # was previously dead code; GET /messages now uses it.
     messages = (
         db.query(models.Message)
+        .options(joinedload(models.Message.sender))
         .order_by(models.Message.timestamp)
+        .limit(limit)
+        .offset(offset)
         .all()
     )
 
@@ -221,6 +373,7 @@ def create_sos(
     db: Session,
     user_id: int,
     sos: schemas.SOSCreate,
+    commit: bool = True,
 ):
     incident = models.SOSEvent(
         incident_id=generate_incident_id(db),
@@ -252,8 +405,12 @@ def create_sos(
 
     db.add(history)
 
-    db.commit()
-    db.refresh(incident)
+    # Audit fix (10): commit=False lets the endpoint commit the
+    # incident and its audit entry in one transaction, so a crash
+    # cannot leave an SOS without its audit row (or vice versa).
+    if commit:
+        db.commit()
+        db.refresh(incident)
 
     return incident
 
@@ -276,6 +433,7 @@ def update_sos_status(
     incident: models.SOSEvent,
     new_status: str,
     changed_by: int,
+    commit: bool = True,
 ):
     old_status = incident.status
 
@@ -297,8 +455,12 @@ def update_sos_status(
     )
 
     db.add(history)
-    db.commit()
-    db.refresh(incident)
+
+    if commit:
+        db.commit()
+        db.refresh(incident)
+    else:
+        db.flush()
 
     return incident
 
@@ -306,6 +468,8 @@ def update_sos_status(
 def get_sos_events(
     db: Session,
     status_filter: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
 ):
     query = (
         db.query(models.SOSEvent)
@@ -317,7 +481,7 @@ def get_sos_events(
             models.SOSEvent.status == status_filter
         )
 
-    return query.all()
+    return query.limit(limit).offset(offset).all()
 
 
 def get_sos_history(
@@ -341,6 +505,7 @@ def create_broadcast(
     db: Session,
     issued_by: int,
     broadcast: schemas.BroadcastCreate,
+    commit: bool = True,
 ):
     db_broadcast = models.Broadcast(
         issued_by=issued_by,
@@ -350,8 +515,13 @@ def create_broadcast(
     )
 
     db.add(db_broadcast)
-    db.commit()
-    db.refresh(db_broadcast)
+
+    if commit:
+        db.commit()
+        db.refresh(db_broadcast)
+    else:
+        db.flush()
+        db.refresh(db_broadcast)
 
     return db_broadcast
 
@@ -359,6 +529,8 @@ def create_broadcast(
 def get_broadcasts(
     db: Session,
     after_id: int | None = None,
+    limit: int = 100,
+    offset: int = 0,
 ):
     query = (
         db.query(models.Broadcast)
@@ -370,7 +542,7 @@ def get_broadcasts(
             models.Broadcast.id > after_id
         )
 
-    return query.all()
+    return query.limit(limit).offset(offset).all()
 
 
 # ------------------
@@ -392,6 +564,7 @@ def create_checkin(
     db: Session,
     user_id: int,
     checkin: schemas.CheckInCreate,
+    commit: bool = True,
 ):
     if checkin.broadcast_id is not None:
         broadcast = (
@@ -410,8 +583,13 @@ def create_checkin(
     )
 
     db.add(db_checkin)
-    db.commit()
-    db.refresh(db_checkin)
+
+    if commit:
+        db.commit()
+        db.refresh(db_checkin)
+    else:
+        db.flush()
+        db.refresh(db_checkin)
 
     return _checkin_to_dict(db_checkin)
 
@@ -419,21 +597,31 @@ def create_checkin(
 def get_user_checkins(
     db: Session,
     user_id: int,
+    limit: int = 100,
+    offset: int = 0,
 ):
+    # joinedload(user): _checkin_to_dict reads username per row,
+    # which was an N+1 before this fix.
     checkins = (
         db.query(models.CheckIn)
+        .options(joinedload(models.CheckIn.user))
         .filter(models.CheckIn.user_id == user_id)
         .order_by(models.CheckIn.created_at.desc())
+        .limit(limit)
+        .offset(offset)
         .all()
     )
 
     return [_checkin_to_dict(c) for c in checkins]
 
 
-def get_checkins(db: Session):
+def get_checkins(db: Session, limit: int = 100, offset: int = 0):
     checkins = (
         db.query(models.CheckIn)
+        .options(joinedload(models.CheckIn.user))
         .order_by(models.CheckIn.created_at.desc())
+        .limit(limit)
+        .offset(offset)
         .all()
     )
 
@@ -485,6 +673,7 @@ def log_audit(
     entity_type: str,
     entity_id: str | None = None,
     detail: str | None = None,
+    commit: bool = True,
 ):
     entry = models.AuditLog(
         actor_id=actor_id,
@@ -495,8 +684,12 @@ def log_audit(
     )
 
     db.add(entry)
-    db.commit()
-    db.refresh(entry)
+
+    if commit:
+        db.commit()
+        db.refresh(entry)
+    else:
+        db.flush()
 
     return entry
 
@@ -507,6 +700,7 @@ def get_audit_logs(
 ):
     logs = (
         db.query(models.AuditLog)
+        .options(joinedload(models.AuditLog.actor))
         .order_by(models.AuditLog.created_at.desc())
         .limit(limit)
         .all()

@@ -301,6 +301,13 @@ class Broadcast(Base):
         index=True,
     )
 
+    # Phase 3: HMAC signature over the canonical broadcast fields,
+    # or None for broadcasts created before Phase 3.
+    signature = Column(
+        String(128),
+        nullable=True,
+    )
+
     created_at = Column(
         DateTime,
         default=lambda: datetime.now(timezone.utc),
@@ -412,4 +419,62 @@ class AuditLog(Base):
     actor = relationship(
         "User",
         back_populates="audit_logs",
+    )
+
+
+class IdempotencyRecord(Base):
+    """Phase 3: replay protection for idempotent POSTs.
+
+    One row per (user, endpoint, Idempotency-Key) stores the
+    response that was first returned, so a retried request
+    (common on a flaky LAN) returns the original result instead
+    of creating a second SOS, broadcast, check-in or message.
+    """
+
+    __tablename__ = "idempotency_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+
+    endpoint = Column(
+        String(100),
+        nullable=False,
+        index=True,
+    )
+
+    idempotency_key = Column(
+        String(200),
+        nullable=False,
+        index=True,
+    )
+
+    response_status = Column(
+        Integer,
+        nullable=False,
+    )
+
+    response_body = Column(
+        Text,
+        nullable=False,
+    )
+
+    created_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "endpoint",
+            "idempotency_key",
+            name="uq_idempotency_user_endpoint_key",
+        ),
     )

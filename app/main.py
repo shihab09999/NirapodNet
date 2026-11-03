@@ -1,22 +1,43 @@
 from pathlib import Path
-from fastapi import FastAPI, Request, Depends, Query
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request, Depends, Query, Header
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+)
+from starlette.background import BackgroundTask
 from fastapi.security import (HTTPAuthorizationCredentials,HTTPBearer,)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
+import json
+import os
+import sqlite3
+import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, Query, status
 from .dependencies import require_role
 from .auth import get_current_user
+from .rate_limit import limiter
+from .security import (
+    broadcast_canonical_string,
+    hash_session_token,
+    sign_broadcast,
+    verify_broadcast_signature,
+)
 
-from .database import engine, get_db
+from .database import DATABASE_URL, engine, get_db
 from .models import Base
 from . import schemas, crud
 
 from fastapi import WebSocket, WebSocketDisconnect
-from .websocket import manager
+from .websocket import (
+    issue_ws_ticket,
+    manager,
+    redeem_ws_ticket,
+)
 from .database import SessionLocal
 from .models import (Base,User,Message,UserSession,SOSEvent,Broadcast,CheckIn,AuditLog,)
 from .dependencies import ALL_ROLES, require_role, ADMIN_ROLE
@@ -26,8 +47,145 @@ security = HTTPBearer()
 
 app = FastAPI(title="NirapodNet")
 
+# Phase 3: security headers on every response. CSP keeps
+# script-src to 'self' (the template loads only /static/app.js);
+# style-src keeps 'unsafe-inline' because the template itself
+# uses inline style attributes for show/hide -- removing those
+# attributes is a follow-up, not a silent break of the UI.
+# HSTS is only sent over HTTPS: sending it over plain LAN HTTP
+# would tell browsers to force HTTPS on later visits and break
+# the plain-HTTP LAN deployment.
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=(self)"
+    )
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self' ws: wss:; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+    return response
+
+
+def _client_ip(request: Request) -> str:
+    # TestClient and direct LAN clients have no trusted proxy
+    # in front of them, so X-Forwarded-For is never trusted:
+    # it is client-controlled and would let an attacker rotate
+    # rate-limit keys at will.
+    if request.client is not None:
+        return request.client.host
+
+    return "unknown"
+
+
+def _check_write_rate_limit(user: User):
+    # 120 writes per minute per user: far above normal emergency
+    # use, far below a flooding client. Phase 2 regression
+    # traffic stays well under this.
+    if not limiter.allow(f"write:{user.id}", 120, 60):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded",
+            headers={"Retry-After": "60"},
+        )
+
+
+def _idempotency_replay(db: Session, user: User, endpoint: str, key):
+    """Return a stored replay response, or None to proceed."""
+    if not key:
+        return None
+
+    record = crud.get_idempotency_record(db, user.id, endpoint, key)
+
+    if record is None:
+        return None
+
+    return JSONResponse(
+        status_code=record.response_status,
+        content=json.loads(record.response_body),
+    )
+
+
+def _save_idempotency(db: Session, user: User, endpoint: str, key,
+                      status_code: int, body: dict):
+    if not key:
+        return
+
+    existing = crud.get_idempotency_record(db, user.id, endpoint, key)
+
+    if existing is not None:
+        return
+
+    crud.save_idempotency_record(
+        db,
+        user_id=user.id,
+        endpoint=endpoint,
+        idempotency_key=key,
+        response_status=status_code,
+        response_body=json.dumps(body),
+    )
+
+
+def _sign_broadcast(db: Session, created):
+    """Sign a broadcast and persist its signature."""
+    canonical = broadcast_canonical_string(
+        created.id,
+        created.issued_by,
+        created.type,
+        created.message,
+        created.priority,
+        created.created_at.isoformat(),
+    )
+    created.signature = sign_broadcast(canonical)
+    db.commit()
+    db.refresh(created)
+    return created
+
 # Create SQLite tables on startup
 Base.metadata.create_all(bind=engine)
+
+
+def _migrate_broadcast_signature():
+    """Phase 3 upgrade: add Broadcast.signature to old databases.
+
+    create_all only creates missing tables, it never adds a
+    column to an existing table. Without this migration, a
+    database created before Phase 3 would fail every
+    broadcast query with "no such column: signature".
+    New databases already have the column, so this is a
+    no-op for them.
+    """
+    with engine.connect() as conn:
+        columns = [
+            row[1]
+            for row in conn.exec_driver_sql(
+                "PRAGMA table_info(broadcasts)"
+            )
+        ]
+
+        if columns and "signature" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE broadcasts "
+                "ADD COLUMN signature VARCHAR(128)"
+            )
+            conn.commit()
+
+
+_migrate_broadcast_signature()
 
 
 def _bootstrap_admin():
@@ -170,9 +328,27 @@ def register_user(
     response_model=schemas.LoginResponse,
 )
 def login_user(
+    request: Request,
     credentials: schemas.LoginRequest,
     db: Session = Depends(get_db),
 ):
+    # Phase 3: count every login attempt, success or not, per
+    # IP + username. The limit is env-tunable for tests; the
+    # default (10/minute) is high enough for normal use and
+    # low enough to slow credential stuffing on one account
+    # without blocking other accounts on the same LAN IP.
+    login_limit = int(
+        os.environ.get("NIRAPODNET_LOGIN_RATE_LIMIT", "10")
+    )
+    login_key = f"login:{_client_ip(request)}:{credentials.username}"
+
+    if not limiter.allow(login_key, login_limit, 60):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts",
+            headers={"Retry-After": "60"},
+        )
+
     user = crud.authenticate_user(
         db,
         credentials.username,
@@ -190,14 +366,14 @@ def login_user(
         + timedelta(hours=24)
     )
 
-    session = crud.create_session(
+    session, token = crud.create_session(
         db,
         user_id=user.id,
         expires_at=expires_at,
     )
 
     return {
-        "token": session.token,
+        "token": token,
         "user": user,
         "expires_at": session.expires_at,
     }
@@ -283,6 +459,11 @@ def update_user_role(
 
     db.commit()
     db.refresh(user)
+
+    # Phase 3: a token issued under the old role must not keep
+    # working. All of this user's sessions are invalidated, so
+    # the user must log in again under the new role.
+    crud.delete_sessions_for_user(db, user.id)
 
     crud.log_audit(
         db,
@@ -379,10 +560,28 @@ def create_message(
             "admin",
         )
     ),
+    idempotency_key: str | None = Header(default=None),
 ):
+    _check_write_rate_limit(current_user)
+
+    replay = _idempotency_replay(
+        db, current_user, "POST /messages", idempotency_key
+    )
+
+    if replay is not None:
+        return replay
+
     message.sender_id = current_user.id
 
-    return crud.create_message(db, message)
+    created = crud.create_message(db, message)
+    body = schemas.MessageResponse.model_validate(created).model_dump(
+        mode="json"
+    )
+    _save_idempotency(
+        db, current_user, "POST /messages", idempotency_key, 200, body
+    )
+
+    return created
 
 
 @app.get("/messages", response_model=list[schemas.MessageResponse])
@@ -427,7 +626,17 @@ async def create_sos(
             "admin",
         )
     ),
+    idempotency_key: str | None = Header(default=None),
 ):
+    _check_write_rate_limit(current_user)
+
+    replay = _idempotency_replay(
+        db, current_user, "POST /api/sos", idempotency_key
+    )
+
+    if replay is not None:
+        return replay
+
     incident = crud.create_sos(
         db=db,
         user_id=current_user.id,
@@ -464,6 +673,13 @@ async def create_sos(
             "status": incident.status,
             "created_at": incident.created_at.isoformat(),
         },
+    )
+
+    body = schemas.SOSResponse.model_validate(incident).model_dump(
+        mode="json"
+    )
+    _save_idempotency(
+        db, current_user, "POST /api/sos", idempotency_key, 201, body
     )
 
     return incident
@@ -669,12 +885,25 @@ async def create_broadcast(
             "admin",
         )
     ),
+    idempotency_key: str | None = Header(default=None),
 ):
+    _check_write_rate_limit(current_user)
+
+    replay = _idempotency_replay(
+        db, current_user, "POST /api/broadcasts", idempotency_key
+    )
+
+    if replay is not None:
+        return replay
+
     created = crud.create_broadcast(
         db,
         issued_by=current_user.id,
         broadcast=broadcast,
     )
+
+    # Phase 3: sign the broadcast before it is delivered.
+    created = _sign_broadcast(db, created)
 
     crud.log_audit(
         db,
@@ -697,7 +926,16 @@ async def create_broadcast(
             "priority": created.priority,
             "issued_by": created.issued_by,
             "created_at": created.created_at.isoformat(),
+            "signature": created.signature,
         }
+    )
+
+    body = schemas.BroadcastResponse.model_validate(
+        created
+    ).model_dump(mode="json")
+    _save_idempotency(
+        db, current_user, "POST /api/broadcasts",
+        idempotency_key, 201, body,
     )
 
     return created
@@ -718,6 +956,48 @@ def list_broadcasts(
     )
 
 
+@app.get("/api/broadcasts/{broadcast_id}/verify")
+def verify_broadcast(
+    broadcast_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Phase 3: check a stored broadcast's HMAC signature.
+
+    Returns valid=False for broadcasts created before Phase 3
+    (no signature stored) and for any broadcast whose stored
+    fields no longer match its signature.
+    """
+    broadcast = (
+        db.query(Broadcast)
+        .filter(Broadcast.id == broadcast_id)
+        .first()
+    )
+
+    if broadcast is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Broadcast not found",
+        )
+
+    canonical = broadcast_canonical_string(
+        broadcast.id,
+        broadcast.issued_by,
+        broadcast.type,
+        broadcast.message,
+        broadcast.priority,
+        broadcast.created_at.isoformat(),
+    )
+
+    return {
+        "id": broadcast.id,
+        "signature_present": broadcast.signature is not None,
+        "valid": verify_broadcast_signature(
+            canonical, broadcast.signature
+        ),
+    }
+
+
 # -----------------------
 # Check-In API
 # -----------------------
@@ -731,7 +1011,17 @@ def create_checkin(
     checkin: schemas.CheckInCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    idempotency_key: str | None = Header(default=None),
 ):
+    _check_write_rate_limit(current_user)
+
+    replay = _idempotency_replay(
+        db, current_user, "POST /api/checkins", idempotency_key
+    )
+
+    if replay is not None:
+        return replay
+
     created = crud.create_checkin(
         db,
         user_id=current_user.id,
@@ -751,6 +1041,14 @@ def create_checkin(
         entity_type="checkin",
         entity_id=str(created["id"]),
         detail=f"status={created['status']}",
+    )
+
+    body = schemas.CheckInResponse.model_validate(
+        created
+    ).model_dump(mode="json")
+    _save_idempotency(
+        db, current_user, "POST /api/checkins",
+        idempotency_key, 201, body,
     )
 
     return created
@@ -849,8 +1147,24 @@ async def websocket_endpoint(
             user.id,
         )
 
+        # Phase 3: optional per-connection replay protection.
+        # seq/ts are optional so Phase 1/2 clients that send
+        # only client_id+content keep working; when a client
+        # does send them, they are enforced strictly.
+        last_seq: int | None = None
+
         while True:
             data = await websocket.receive_json()
+
+            # Phase 3: 30 messages per 10 seconds per connection.
+            if not limiter.allow(
+                f"ws:{id(websocket)}", 30, 10
+            ):
+                await websocket.send_json({
+                    "type": "error",
+                    "error": "Rate limit exceeded",
+                })
+                continue
 
             client_id = data.get("client_id")
             content = data.get("content")
@@ -869,6 +1183,50 @@ async def websocket_endpoint(
                     "error": "Invalid message",
                 })
                 continue
+
+            # Phase 3 replay checks, only when the client sends
+            # these fields. Control characters are also rejected
+            # here, matching the REST schema validators.
+            from .security import contains_control_characters
+
+            if contains_control_characters(content):
+                await websocket.send_json({
+                    "type": "error",
+                    "error": "Invalid message",
+                })
+                continue
+
+            if "seq" in data:
+                seq = data.get("seq")
+
+                if (
+                    not isinstance(seq, int)
+                    or isinstance(seq, bool)
+                    or (
+                        last_seq is not None and seq <= last_seq
+                    )
+                ):
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": "Stale or replayed sequence",
+                    })
+                    continue
+
+                last_seq = seq
+
+            if "ts" in data:
+                ts = data.get("ts")
+
+                if (
+                    not isinstance(ts, (int, float))
+                    or isinstance(ts, bool)
+                    or abs(time.time() - float(ts)) > 300
+                ):
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": "Stale timestamp",
+                    })
+                    continue
 
             existing = (
                 db.query(Message)
